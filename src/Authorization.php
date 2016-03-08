@@ -3,12 +3,22 @@ namespace Chadicus\Slim\OAuth2\Middleware;
 
 use OAuth2;
 use Chadicus\Slim\OAuth2\Http\MessageBridge;
+use Slim\App;
+use Symfony\Component\Filesystem\Exception\IOException;
 
 /**
  * Slim Middleware to handle OAuth2 Authorization.
  */
-class Authorization extends \Slim\Middleware
+class Authorization
 {
+    /**
+     * The slim framework application instance.
+     *
+     * @var App
+     */
+    private $app;
+
+
     /**
      * OAuth2 Server
      *
@@ -19,51 +29,58 @@ class Authorization extends \Slim\Middleware
     /**
      * Create a new instance of the Authroization middleware
      *
+     * @param App $app
      * @param OAuth2\Server $server The configured OAuth2 server.
      */
-    public function __construct(OAuth2\Server $server)
+    public function __construct(App $app, OAuth2\Server $server)
     {
+        $this->app = $app;
         $this->server = $server;
     }
 
     /**
      * Verify request contains valid access token.
      *
+     * @param \Psr\Http\Message\ServerRequestInterface $req
+     * @param \Psr\Http\Message\ResponseInterface $res
+     * @param $next
      * @param array $scopes Scopes required for authorization. $scopes can be given as an array of arrays. OR logic will
      *                      use with each grouping. Example: Given ['superUser', ['basicUser', 'aPermission']], the
      *                      request will be verified if the request token has 'superUser' scope OR 'basicUser' and
      *                      'aPermission' as its scope.
-     * @return void
+     * @return \Psr\Http\Message\ResponseInterface
      */
-    public function call(array $scopes = [null])
+    public function call($req, $res, $next, array $scopes = [null])
     {
-        if (!$this->verify($scopes)) {
-            MessageBridge::mapResponse($this->server->getResponse(), $this->app->response());
-            $this->app->stop();
+        if (!$this->verify($req, $scopes)) {
+            MessageBridge::mapResponse($this->server->getResponse(), $res);
+            return $res;
         } //@codeCoverageIgnore since stop() throws
 
-        $this->app->token = $this->server->getResourceController()->getToken();
+        $container = $this->app->getContainer();
+        $container['token'] = $this->server->getResourceController()->getToken();
 
-        if ($this->next !== null) {
-            $this->next->call();
+        if ($next !== null) {
+            $res = $next($req, $res);
         }
+        return $res;
     }
 
     /**
      * Helper method to verify a resource request, allowing return early on success cases
      *
+     * @param \Psr\Http\Message\ServerRequestInterface $req
      * @param array $scopes Scopes required for authorization.
-     *
-     * @return boolean True if the request is verified, otherwise false
+     * @return bool True if the request is verified, otherwise false
      */
-    private function verify(array $scopes = [null])
+    private function verify($req, array $scopes = [null])
     {
         foreach ($scopes as $scope) {
             if (is_array($scope)) {
                 $scope = implode(' ', $scope);
             }
 
-            $oauth2Request = MessageBridge::newOauth2Request($this->app->request());
+            $oauth2Request = MessageBridge::newOauth2Request($req);
             if ($this->server->verifyResourceRequest($oauth2Request, null, $scope)) {
                 return true;
             }
@@ -73,13 +90,16 @@ class Authorization extends \Slim\Middleware
     }
 
     /**
-     * Allows this middleware to be used as a callable.
+     * Call this class as a function.
      *
-     * @return void
+     * @param \Psr\Http\Message\ServerRequestInterface $req
+     * @param \Psr\Http\Message\ResponseInterface $res
+     * @param $next
+     * @return \Psr\Http\Message\ResponseInterface
      */
-    public function __invoke()
+    public function __invoke($req, $res, $next)
     {
-        $this->call();
+        return $this->call($req, $res, $next);
     }
 
     /**
@@ -92,8 +112,8 @@ class Authorization extends \Slim\Middleware
     public function withRequiredScope(array $scopes)
     {
         $auth = $this;
-        return function () use ($auth, $scopes) {
-            return $auth->call($scopes);
+        return function ($req, $res, $next) use ($auth, $scopes) {
+            return $auth->call($req, $res, $next, $scopes);
         };
     }
 }
